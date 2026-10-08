@@ -1,6 +1,8 @@
 /* Focus Tracker
- * Times study and work sessions, records distractions and time away from the tab,
- * asks for a 1–5 focus rating at the end, and finds patterns in the data.
+ * Times study and work sessions, records where you were, distractions and time
+ * away from the tab, asks for a 1–5 focus rating at the end, and keeps a short
+ * daily check-in (wake-up time, first thing you did, food, other plans).
+ * It then looks for patterns between all of that and your focus.
  * Everything is stored in this browser's localStorage.
  */
 (() => {
@@ -9,6 +11,9 @@
   const STORE_KEY = "focus-tracker.sessions.v1";
   const ACTIVE_KEY = "focus-tracker.active.v1";
   const KIND_KEY = "focus-tracker.kind.v1"; // remembers Studying/Working between visits
+  const PLACE_KEY = "focus-tracker.place.v1"; // remembers the last place
+  const DAYS_KEY = "focus-tracker.days.v1"; // daily check-ins, keyed by YYYY-MM-DD
+  const DAY_STARTS_AT = 4; // sessions before 4am count toward the previous day
   const FULL_BAND_MINUTES = 50; // highlighter under the clock is full after this long
   const MIN_SESSIONS_FOR_INSIGHTS = 1;
   const MIN_SESSIONS_PER_GROUP = 2; // a time block needs this many sessions to be called "best"
@@ -32,6 +37,19 @@
   ];
   const RATING_WORDS = ["", "Barely", "Scattered", "Okay", "Solid", "Locked in"];
   const KINDS = { study: { label: "Studying", noun: "studying" }, work: { label: "Working", noun: "working" } };
+  const DEFAULT_PLACES = ["Home", "Library", "Café", "Campus", "Work"];
+  const WAKES = [
+    { label: "Before 7am", phrase: "before 7am", before: 7 * 60 },
+    { label: "7–9am", phrase: "between 7 and 9am", before: 9 * 60 },
+    { label: "9–11am", phrase: "between 9 and 11am", before: 11 * 60 },
+    { label: "11am or later", phrase: "at 11am or later", before: Infinity },
+  ];
+  const BUSY = [
+    { label: "Nothing else", phrase: "nothing else on", max: 0 },
+    { label: "1–2 things", phrase: "1 or 2 other things on", max: 2 },
+    { label: "3–4 things", phrase: "3 or 4 other things on", max: 4 },
+    { label: "5 or more", phrase: "5 or more other things on", max: Infinity },
+  ];
   // Sessions saved before the Studying/Working choice existed count as studying
   const kindOf = (s) => (s.kind === "work" ? "work" : "study");
 
@@ -57,6 +75,10 @@
   let active = load(ACTIVE_KEY, null); // { start, kind, distractions: [ms], awayMs, hiddenAt }
   let logShown = LOG_PAGE;
   let filter = "all"; // which sessions the insights cover: all, study or work
+  let days = load(DAYS_KEY, {});
+  if (!days || typeof days !== "object" || Array.isArray(days)) days = {};
+  let editingToday = false;
+  function saveDays() { store(DAYS_KEY, days); }
 
   function saveSessions() { store(STORE_KEY, sessions); }
   function saveActive() { store(ACTIVE_KEY, active); }
@@ -70,6 +92,10 @@
   const $ = (id) => document.getElementById(id);
   const el = {
     activity: $("activity"), filter: $("filter"),
+    location: $("location"), placeChips: $("place-chips"),
+    todayForm: $("today-form"), todaySummary: $("today-summary"), todayEdit: $("today-edit"), todayCancel: $("today-cancel"),
+    wake: $("wake"), firstChips: $("first-chips"), firstOther: $("first-other"), food: $("food"), plans: $("plans"),
+    places: $("places"), wakes: $("wakes"), firsts: $("firsts"), busy: $("busy"),
     timer: $("timer"), band: $("clock-band"), status: $("status"), hint: $("hint"),
     start: $("start"), distract: $("distract"), distractCount: $("distract-count"), finish: $("finish"),
     insightsEmpty: $("insights-empty"), insightsBody: $("insights-body"),
@@ -113,6 +139,53 @@
   }
   const lengthOf = (s) => LENGTHS.findIndex((l) => minutesOf(s) < l.max);
 
+  // ---------- Days and places ----------
+  // Which day a moment belongs to. A 1am session still counts as part of the day before.
+  function dayKeyOf(ms) {
+    const d = new Date(ms);
+    if (d.getHours() < DAY_STARTS_AT) d.setDate(d.getDate() - 1);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+  const todayKey = () => dayKeyOf(Date.now());
+  const dateFromKey = (key) => { const [y, m, d] = key.split("-").map(Number); return new Date(y, m - 1, d); };
+  const dayOf = (s) => days[dayKeyOf(s.start)];
+
+  const tidy = (v) => String(v || "").trim().replace(/\s+/g, " ");
+  const keyText = (v) => tidy(v).toLowerCase();
+  function wakeMinutes(wake) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(wake || "");
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  }
+  function wakeLabel(wake) {
+    const mins = wakeMinutes(wake);
+    if (mins === null) return "";
+    const d = new Date(2000, 0, 1, Math.floor(mins / 60), mins % 60);
+    return timeFmt.format(d);
+  }
+
+  // Grouping keys for the charts. Returning "" leaves a session out of that chart.
+  const placeKeyOf = (s) => keyText(s.place);
+  function wakeOf(s) {
+    const mins = wakeMinutes(dayOf(s)?.wake);
+    return mins === null ? "" : WAKES.findIndex((w) => mins < w.before);
+  }
+  const firstKeyOf = (s) => keyText(dayOf(s)?.first);
+  function busyOf(s) {
+    const d = dayOf(s);
+    if (!d) return "";
+    const n = Array.isArray(d.plans) ? d.plans.length : 0;
+    return BUSY.findIndex((b) => n <= b.max);
+  }
+  // Shows text the way the user first typed it, while grouping "library" with "Library"
+  function labelsFor(list, getter) {
+    const labels = new Map();
+    for (const s of list) {
+      const v = tidy(getter(s));
+      if (v && !labels.has(v.toLowerCase())) labels.set(v.toLowerCase(), v);
+    }
+    return labels;
+  }
+
   // ---------- Running a session ----------
   let ticker = null;
 
@@ -130,6 +203,7 @@
     active = {
       start: Date.now(),
       kind: chosenKind(),
+      place: tidy(el.location.value),
       distractions: [],
       awayMs: 0,
       hiddenAt: document.hidden ? Date.now() : null,
@@ -155,7 +229,7 @@
     const min = (active.end - active.start) / 60000;
     const d = active.distractions.length;
     const away = Math.round(active.awayMs / 60000);
-    let summary = `${duration(Math.max(1, min))} of ${KINDS[kindOf(active)].noun}, ${plural(d, "distraction")}`;
+    let summary = `${duration(Math.max(1, min))} of ${KINDS[kindOf(active)].noun}${active.place ? ` at ${active.place}` : ""}, ${plural(d, "distraction")}`;
     if (away >= 1) summary += `, ${duration(away)} away from this tab`;
     el.rateSummary.textContent = summary + ".";
     el.rateForm.reset();
@@ -172,6 +246,7 @@
         start: active.start,
         end: active.end,
         kind: kindOf(active),
+        place: tidy(active.place),
         rating: Number(data.get("rating")),
         distractions: active.distractions,
         awayMs: Math.round(active.awayMs),
@@ -207,6 +282,8 @@
   }
 
   document.addEventListener("visibilitychange", () => {
+    // Coming back to the tab after midnight shows the new day's check-in
+    if (!document.hidden && !editingToday) renderToday();
     if (!active || active.end) return;
     if (document.hidden) active.hiddenAt = Date.now();
     else settleAway();
@@ -230,6 +307,8 @@
     el.distract.hidden = !running;
     el.finish.hidden = !running;
     el.activity.querySelectorAll("input").forEach((i) => { i.disabled = !!active; });
+    el.location.disabled = !!active;
+    el.placeChips.querySelectorAll("button").forEach((b) => { b.disabled = !!active; });
 
     if (!active) {
       stopTicker();
@@ -241,6 +320,7 @@
     }
 
     setChosenKind(kindOf(active));
+    el.location.value = active.place || "";
     el.distractCount.textContent = active.distractions.length;
     const parts = [`Started at ${timeFmt.format(active.start)}`];
     const away = Math.floor((active.awayMs || 0) / 60000);
@@ -266,6 +346,7 @@
     const groups = new Map();
     for (const s of list) {
       const k = keyFn(s);
+      if (k === "" || k === -1 || k === undefined || k === null) continue;
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(s);
     }
@@ -293,6 +374,28 @@
       out.push(`So far most of your sessions are in the <strong>${BLOCKS[byBlock[0].key].phrase}</strong>. Try a few sessions at other times to compare.`);
     }
 
+    const byPlace = rank(groupBy(list, placeKeyOf));
+    if (byPlace.length >= 2) {
+      const names = labelsFor(list, (s) => s.place);
+      out.push(`You focus best at <strong>${escapeHtml(names.get(byPlace[0].key))}</strong>, averaging ${one(byPlace[0].rating)} out of 5.`);
+    }
+
+    const byWake = rank(groupBy(list, wakeOf));
+    if (byWake.length >= 2) {
+      out.push(`Your focus is best on days you wake up <strong>${WAKES[byWake[0].key].phrase}</strong>.`);
+    }
+
+    const byFirst = rank(groupBy(list, firstKeyOf));
+    if (byFirst.length >= 2) {
+      const names = labelsFor(list, (s) => dayOf(s)?.first);
+      out.push(`Your best days start with “<strong>${escapeHtml(names.get(byFirst[0].key))}</strong>” first thing.`);
+    }
+
+    const byBusy = rank(groupBy(list, busyOf));
+    if (byBusy.length >= 2) {
+      out.push(`You focus best on days with <strong>${BUSY[byBusy[0].key].phrase}</strong>.`);
+    }
+
     const byDay = rank(groupBy(list, weekdayOf));
     if (byDay.length >= 3) {
       out.push(`Your strongest day is <strong>${fullDay(byDay[0].key)}</strong>, averaging ${one(byDay[0].rating)} out of 5.`);
@@ -307,7 +410,7 @@
       const left = Math.max(1, 5 - list.length);
       out.push(`Log ${plural(left, "more session")} at different times of day to start seeing patterns.`);
     }
-    return out;
+    return out.slice(0, 6);
   }
   function fullDay(i) {
     return ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][i];
@@ -338,7 +441,7 @@
       el.headlines.innerHTML = `<li>No ${KINDS[filter].noun} sessions yet.</li>`;
       el.stats.innerHTML = "";
       el.heatmap.innerHTML = "";
-      el.lengths.innerHTML = "";
+      [el.lengths, el.places, el.wakes, el.firsts, el.busy].forEach((c) => { c.innerHTML = ""; });
       renderBars(el.kinds, groupBy(sessions, kindOf), (k) => KINDS[k].label, false);
       return;
     }
@@ -359,6 +462,15 @@
     renderBars(el.lengths, groupBy(view, lengthOf), (k) => LENGTHS[k].label, true);
     // The comparison always covers both kinds, whatever the filter
     renderBars(el.kinds, groupBy(sessions, kindOf), (k) => KINDS[k].label, false);
+
+    const placeNames = labelsFor(view, (s) => s.place);
+    renderBars(el.places, groupBy(view, placeKeyOf), (k) => placeNames.get(k), false,
+      "Add where you are when you start a session to see this.");
+    const checkIn = "Do the daily check-in to see this.";
+    renderBars(el.wakes, groupBy(view, wakeOf), (k) => WAKES[k].label, true, checkIn);
+    const firstNames = labelsFor(view, (s) => dayOf(s)?.first);
+    renderBars(el.firsts, groupBy(view, firstKeyOf), (k) => firstNames.get(k), false, checkIn);
+    renderBars(el.busy, groupBy(view, busyOf), (k) => BUSY[k].label, true, checkIn);
   }
 
   el.filter.addEventListener("change", () => {
@@ -394,7 +506,11 @@
     el.heatmap.innerHTML = html;
   }
 
-  function renderBars(container, groups, labelFn, keepOrder) {
+  function renderBars(container, groups, labelFn, keepOrder, emptyText = "") {
+    if (!groups.size) {
+      container.innerHTML = emptyText ? `<p class="bars-empty">${emptyText}</p>` : "";
+      return;
+    }
     let rows = [...groups.entries()].map(([key, list]) => ({ key, ...summarize(list) }));
     if (keepOrder) rows.sort((a, b) => a.key - b.key);
     else rows.sort((a, b) => b.minutes - a.minutes);
@@ -402,24 +518,46 @@
     const eligible = rows.filter((r) => r.n >= MIN_SESSIONS_PER_GROUP);
     const bestKey = eligible.length >= 2 ? eligible.reduce((a, b) => (b.rating > a.rating ? b : a)).key : null;
     container.innerHTML = rows.map((r) => `
-      <div class="bar-row${r.key === bestKey ? " is-best" : ""}" title="${plural(r.n, "session")}, ${one(r.perHour)} distractions an hour">
+      <div class="bar-row${r.key === bestKey ? " is-best" : ""}" title="${plural(r.n, "session")}, ${duration(r.minutes)}, ${one(r.perHour)} distractions an hour">
         <span class="label">${escapeHtml(labelFn(r.key))}</span>
         <span class="bar-track"><span class="bar-fill" style="width:${(r.rating / 5) * 100}%"></span></span>
-        <span class="value"><b>${one(r.rating)}</b> · ${keepOrder ? plural(r.n, "session") : duration(r.minutes)}</span>
+        <span class="value"><b>${one(r.rating)}</b> · ${plural(r.n, "session")}</span>
       </div>`).join("");
   }
 
   // ---------- Log ----------
+  function daySummary(d, { long = false } = {}) {
+    if (!d) return "";
+    const parts = [];
+    if (d.wake) parts.push(`Up at <b>${wakeLabel(d.wake)}</b>`);
+    if (d.first) parts.push(`first thing: <b>${escapeHtml(d.first)}</b>`);
+    const plans = Array.isArray(d.plans) ? d.plans : [];
+    if (long && plans.length) parts.push(`also on: ${plans.map((p) => `<b>${escapeHtml(p)}</b>`).join(", ")}`);
+    else if (plans.length) parts.push(`<b>${plans.length}</b> other ${plans.length === 1 ? "thing" : "things"} on`);
+    if (d.food) parts.push(`ate: <b>${escapeHtml(d.food)}</b>`);
+    if (!parts.length) return "";
+    const text = parts.join(", ");
+    return text.charAt(0).toUpperCase() + text.slice(1) + ".";
+  }
+
   function renderLog() {
     el.logEmpty.hidden = sessions.length > 0;
     const recent = [...sessions].reverse();
     const shown = recent.slice(0, logShown);
+    let lastDay = null;
     el.log.innerHTML = shown.map((s) => {
+      let header = "";
+      const key = dayKeyOf(s.start);
+      if (key !== lastDay) {
+        lastDay = key;
+        const summary = daySummary(days[key], { long: true });
+        header = `<li class="log-day"><h3>${dayFmt.format(dateFromKey(key))}</h3>${summary ? `<p>${summary}</p>` : ""}</li>`;
+      }
       const bits = [duration(Math.max(1, minutesOf(s))), plural(distractionsOf(s), "distraction")];
       const away = Math.round((s.awayMs || 0) / 60000);
       if (away >= 1) bits.push(`${duration(away)} away`);
-      return `<li>
-        <span class="log-when">${dayFmt.format(s.start)}, ${timeFmt.format(s.start)} <span class="log-kind">${KINDS[kindOf(s)].label}</span></span>
+      return `${header}<li>
+        <span class="log-when">${timeFmt.format(s.start)} <span class="log-kind">${KINDS[kindOf(s)].label}${s.place ? ` at ${escapeHtml(s.place)}` : ""}</span></span>
         <span class="log-meta">${bits.join(", ")}${s.note ? ` — <span class="log-note">${escapeHtml(s.note)}</span>` : ""}</span>
         <span class="log-rating" style="--r:${s.rating}" title="${RATING_WORDS[s.rating]}" aria-label="Focus ${s.rating} of 5">${s.rating}</span>
         <button class="log-delete" data-id="${escapeHtml(s.id)}">Delete</button>
@@ -429,6 +567,90 @@
       el.log.insertAdjacentHTML("beforeend", `<li style="border:0"><button class="btn btn-quiet more" id="more">Show ${Math.min(LOG_PAGE, recent.length - logShown)} more</button></li>`);
     }
   }
+
+  // ---------- Places ----------
+  function renderPlaceChips() {
+    const counts = new Map();
+    for (const s of sessions) {
+      if (s.sample || !tidy(s.place)) continue;
+      const k = keyText(s.place);
+      const c = counts.get(k) || { name: tidy(s.place), n: 0 };
+      c.n++;
+      counts.set(k, c);
+    }
+    const names = counts.size
+      ? [...counts.values()].sort((a, b) => b.n - a.n).slice(0, 6).map((c) => c.name)
+      : DEFAULT_PLACES;
+    const current = keyText(el.location.value);
+    el.placeChips.innerHTML = names.map((n) =>
+      `<button type="button" data-place="${escapeHtml(n)}" aria-pressed="${keyText(n) === current}"${active ? " disabled" : ""}>${escapeHtml(n)}</button>`).join("");
+  }
+  el.placeChips.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-place]");
+    if (!b || active) return;
+    el.location.value = b.dataset.place;
+    store(PLACE_KEY, el.location.value);
+    renderPlaceChips();
+  });
+  el.location.addEventListener("input", () => {
+    store(PLACE_KEY, tidy(el.location.value));
+    renderPlaceChips();
+  });
+
+  // ---------- Daily check-in ----------
+  function renderToday() {
+    const d = days[todayKey()];
+    const showForm = editingToday;
+    el.todayForm.hidden = !showForm;
+    el.todaySummary.hidden = showForm;
+    el.todayEdit.hidden = showForm;
+    el.todayEdit.textContent = d ? "Edit check-in" : "Check in";
+    el.todayEdit.classList.toggle("btn-quiet", !!d);
+    el.todayEdit.classList.toggle("btn-primary", !d);
+    if (!showForm) {
+      el.todaySummary.innerHTML = d ? (daySummary(d) || "Checked in.")
+        : "You haven't checked in today. It takes a minute: wake-up time, how you started the day, food and plans.";
+      return;
+    }
+    // Fill the form with today's answers, if any
+    el.wake.value = d?.wake || "";
+    const first = tidy(d?.first);
+    let matched = false;
+    el.firstChips.querySelectorAll("input").forEach((i) => {
+      i.checked = !!first && i.value === first;
+      if (i.checked) matched = true;
+    });
+    el.firstOther.value = matched ? "" : first;
+    el.food.value = d?.food || "";
+    el.plans.value = (d?.plans || []).join("\n");
+  }
+
+  el.firstOther.addEventListener("input", () => {
+    if (el.firstOther.value.trim()) el.firstChips.querySelectorAll("input").forEach((i) => { i.checked = false; });
+  });
+  el.firstChips.addEventListener("change", () => { el.firstOther.value = ""; });
+
+  el.todayForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const picked = el.firstChips.querySelector("input:checked");
+    const entry = {
+      wake: el.wake.value || "",
+      first: tidy(el.firstOther.value) || (picked ? picked.value : ""),
+      food: tidy(el.food.value),
+      plans: el.plans.value.split("\n").map(tidy).filter(Boolean),
+    };
+    if (!entry.wake && !entry.first && !entry.food && !entry.plans.length) {
+      toast("Fill in at least one answer to save your check-in.");
+      return;
+    }
+    days[todayKey()] = entry;
+    saveDays();
+    editingToday = false;
+    renderAll();
+    toast("Check-in saved.");
+  });
+  el.todayEdit.addEventListener("click", () => { editingToday = true; renderToday(); el.wake.focus(); });
+  el.todayCancel.addEventListener("click", () => { editingToday = false; renderToday(); });
 
   el.log.addEventListener("click", (e) => {
     const del = e.target.closest(".log-delete");
@@ -450,8 +672,10 @@
   });
 
   function renderAll() {
+    renderToday();
     renderInsights();
     renderLog();
+    renderPlaceChips();
     if (!active) renderActive();
   }
 
@@ -469,18 +693,27 @@
 
   el.exportCsv.addEventListener("click", () => {
     if (!sessions.length) return toast("No sessions to export yet.");
-    const head = ["start", "end", "weekday", "time_of_day", "minutes", "activity", "focus_rating", "distractions", "minutes_away", "note"];
-    const rows = sessions.map((s) => [
-      new Date(s.start).toISOString(), new Date(s.end).toISOString(), fullDay(weekdayOf(s)),
-      BLOCKS[blockOf(s)].label, Math.round(minutesOf(s)), KINDS[kindOf(s)].noun, s.rating,
-      distractionsOf(s), Math.round((s.awayMs || 0) / 60000), s.note || "",
-    ].map(csvCell).join(","));
+    const head = ["day", "start", "end", "weekday", "time_of_day", "minutes", "activity", "location", "focus_rating",
+      "distractions", "minutes_away", "note", "woke_up", "first_thing", "ate", "other_plans", "other_plans_count"];
+    const rows = sessions.map((s) => {
+      const d = dayOf(s) || {};
+      const plans = Array.isArray(d.plans) ? d.plans : [];
+      return [
+        dayKeyOf(s.start), new Date(s.start).toISOString(), new Date(s.end).toISOString(), fullDay(weekdayOf(s)),
+        BLOCKS[blockOf(s)].label, Math.round(minutesOf(s)), KINDS[kindOf(s)].noun, s.place || "", s.rating,
+        distractionsOf(s), Math.round((s.awayMs || 0) / 60000), s.note || "",
+        d.wake || "", d.first || "", d.food || "", plans.join("; "), dayOf(s) ? plans.length : "",
+      ].map(csvCell).join(",");
+    });
     download(`focus-sessions-${today()}.csv`, [head.join(","), ...rows].join("\n"), "text/csv");
   });
 
   el.exportJson.addEventListener("click", () => {
-    if (!sessions.length) return toast("No sessions to back up yet.");
-    download(`focus-tracker-backup-${today()}.json`, JSON.stringify({ app: "focus-tracker", version: 1, sessions }, null, 2), "application/json");
+    if (!sessions.length && !Object.keys(days).length) return toast("Nothing to back up yet.");
+    const realDays = Object.fromEntries(Object.entries(days).filter(([, d]) => !d.sample));
+    download(`focus-tracker-backup-${today()}.json`,
+      JSON.stringify({ app: "focus-tracker", version: 2, sessions: sessions.filter((s) => !s.sample), days: realDays }, null, 2),
+      "application/json");
   });
 
   el.importInput.addEventListener("change", async () => {
@@ -490,13 +723,19 @@
     try {
       const data = JSON.parse(await file.text());
       const incoming = (Array.isArray(data) ? data : data.sessions || []).filter(isValidSession);
-      if (!incoming.length) return toast("That file has no sessions in it.");
+      const incomingDays = data && data.days && typeof data.days === "object" && !Array.isArray(data.days) ? data.days : {};
+      if (!incoming.length && !Object.keys(incomingDays).length) return toast("That file has no sessions in it.");
       const known = new Set(sessions.map((s) => s.id));
       const added = incoming.filter((s) => !known.has(s.id));
       sessions = [...sessions, ...added].sort((a, b) => a.start - b.start);
+      let addedDays = 0;
+      for (const [key, d] of Object.entries(incomingDays)) {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(key) && d && typeof d === "object" && !days[key]) { days[key] = d; addedDays++; }
+      }
       saveSessions();
+      saveDays();
       renderAll();
-      toast(`Restored ${plural(added.length, "session")}.`);
+      toast(`Restored ${plural(added.length, "session")} and ${plural(addedDays, "check-in")}.`);
     } catch {
       toast("That file isn't a Focus Tracker backup.");
     }
@@ -505,29 +744,58 @@
   // ---------- Sample data ----------
   function makeSampleData() {
     const out = [];
+    const sampleDays = {};
     const now = new Date();
     let seed = 7;
     const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+    const pick = (arr) => arr[Math.floor(rand() * arr.length)];
     // Times of day this pretend student studies or works, with how well they tend to focus then
     const habits = [
       { hour: 8, base: 3.6, kind: "study" }, { hour: 10, base: 4.4, kind: "study" }, { hour: 13, base: 3.0, kind: "work" },
       { hour: 16, base: 3.9, kind: "work" }, { hour: 19, base: 3.8, kind: "study" }, { hour: 22, base: 2.6, kind: "study" },
       { hour: 0, base: 1.9, kind: "study" }, { hour: 18, base: 3.2, kind: "work" },
     ];
+    // How each part of the day tends to nudge focus up or down for this pretend student
+    const firsts = [
+      { text: "Checked my phone", effect: -0.5 }, { text: "Exercised", effect: 0.5 }, { text: "Ate breakfast", effect: 0.2 },
+      { text: "Showered", effect: 0 }, { text: "Went outside", effect: 0.4 },
+    ];
+    const studyPlaces = [{ name: "Library", effect: 0.5 }, { name: "Home", effect: -0.4 }, { name: "Café", effect: 0 }];
+    const meals = ["oatmeal, coffee", "toast and eggs", "chicken wrap", "leftover pasta", "smoothie", "ramen", "salad and a muffin", "pizza"];
+    const plansPool = ["Chem lecture 10–11:30", "Lab 1–4", "Shift at work 5–9", "Gym", "Group project meeting", "Dentist", "Call home", "Tutorial 2:30"];
+
     for (let day = 27; day >= 1; day--) {
+      const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day);
+      const key = dayKeyOf(date.getTime() + 12 * 3600000);
+      const wakeMins = Math.round((6.5 + rand() * 4.5) * 4) * 15;
+      const first = pick(firsts);
+      const nPlans = Math.floor(rand() * 6);
+      sampleDays[key] = {
+        sample: true,
+        wake: `${pad(Math.floor(wakeMins / 60))}:${pad(wakeMins % 60)}`,
+        first: first.text,
+        food: `${pick(meals)}, ${pick(meals)}`,
+        plans: [...plansPool].sort(() => rand() - 0.5).slice(0, nPlans),
+      };
+      const dayEffect = (wakeMins < 8 * 60 ? 0.3 : wakeMins >= 10 * 60 ? -0.4 : 0) + first.effect + (nPlans >= 4 ? -0.4 : 0);
+
       const count = rand() < 0.3 ? 0 : rand() < 0.6 ? 1 : 2;
       for (let i = 0; i < count; i++) {
         const h = habits[Math.floor(rand() * habits.length)];
-        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day, h.hour, Math.floor(rand() * 50));
+        const d = new Date(date.getFullYear(), date.getMonth(), date.getDate(), h.hour, Math.floor(rand() * 50));
+        if (h.hour < DAY_STARTS_AT) d.setDate(d.getDate() + 1); // a late session belongs to this day
+        const place = h.kind === "work" ? { name: "Work", effect: 0 } : pick(studyPlaces);
         const minutes = [20, 30, 40, 45, 60, 75, 110][Math.floor(rand() * 7)];
         const lengthEffect = minutes >= 90 ? -0.8 : minutes >= 50 ? -0.2 : minutes < 25 ? -0.3 : 0.3;
         const weekendEffect = d.getDay() === 0 || d.getDay() === 6 ? -0.3 : 0;
-        const rating = Math.min(5, Math.max(1, Math.round(h.base + lengthEffect + weekendEffect + (rand() - 0.5) * 1.4)));
+        const rating = Math.min(5, Math.max(1, Math.round(h.base + lengthEffect + weekendEffect + dayEffect + place.effect + (rand() - 0.5) * 1.2)));
         const start = d.getTime(), end = start + minutes * 60000;
+        if (start >= Date.now()) continue;
         const nDistract = Math.max(0, Math.round((5.5 - rating) * minutes / 40 + (rand() - 0.5) * 2));
         out.push({
           id: `sample-${start}`, start, end, sample: true,
           kind: h.kind,
+          place: place.name,
           rating,
           distractions: Array.from({ length: nDistract }, () => start + rand() * (end - start)).sort(),
           awayMs: Math.round(rand() * (5.5 - rating) * 3 * 60000),
@@ -535,19 +803,26 @@
         });
       }
     }
-    return out;
+    return { sessions: out, days: sampleDays };
   }
 
   function removeSampleData(render = true) {
     const before = sessions.length;
     sessions = sessions.filter((s) => !s.sample);
     if (sessions.length !== before) saveSessions();
+    const sampleKeys = Object.keys(days).filter((k) => days[k].sample);
+    sampleKeys.forEach((k) => delete days[k]);
+    if (sampleKeys.length) saveDays();
     if (render) renderAll();
   }
 
   el.sample.addEventListener("click", () => {
-    sessions = [...sessions, ...makeSampleData()].sort((a, b) => a.start - b.start);
+    const sample = makeSampleData();
+    sessions = [...sessions, ...sample.sessions].sort((a, b) => a.start - b.start);
+    // Sample check-ins never replace a real one
+    for (const [key, d] of Object.entries(sample.days)) if (!days[key]) days[key] = d;
     saveSessions();
+    saveDays();
     renderAll();
   });
   el.clearSample.addEventListener("click", () => { removeSampleData(); toast("Sample data removed."); });
@@ -567,6 +842,7 @@
   el.finish.addEventListener("click", finishSession);
 
   setChosenKind(load(KIND_KEY, "study"));
+  el.location.value = load(PLACE_KEY, "") || "";
 
   // Restore a session that was running when the page closed
   if (active) {

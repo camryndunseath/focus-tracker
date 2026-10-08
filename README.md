@@ -4,9 +4,10 @@ A small web app that tracks how well you focus while you study or work, so you c
 
 ## How it works
 
-1. Choose **Studying** or **Working** and press **Start session**.
-2. Each time your mind wanders or you pick up your phone, press **I got distracted**. Time you spend away from the browser tab is counted automatically.
-3. Press **Finish session** and rate your focus from 1 (barely) to 5 (locked in). You can add a short note, like "tired" or "noisy library".
+1. Once a day, press **Check in** and note what time you woke up, what you did first thing, what you've eaten and what else is on today. You can edit it later in the day, for example to add meals.
+2. Choose **Studying** or **Working**, say where you are, and press **Start session**. Places you've used before show up as quick picks.
+3. Each time your mind wanders or you pick up your phone, press **I got distracted**. Time you spend away from the browser tab is counted automatically.
+4. Press **Finish session** and rate your focus from 1 (barely) to 5 (locked in). You can add a short note, like "tired" or "noisy library".
 
 After a few sessions, the **When you focus best** section shows:
 
@@ -14,8 +15,14 @@ After a few sessions, the **When you focus best** section shows:
 - a day × time-of-day heatmap of your average focus
 - how your focus changes with session length
 - how your focus compares between studying and working
+- your focus at each place
+- your focus by wake-up time, by what you did first thing, and by how busy your day was
 
 Once you have both kinds of session, you can filter the insights to just studying or just working. Your best hours for one may not be your best hours for the other.
+
+Sessions between midnight and 4am count toward the day before, so a late-night session uses that day's check-in.
+
+What you ate is shown in the session log and the CSV export, but it isn't charted, since free-text meals can't be averaged.
 
 Use **Preview with sample data** to see what the insights look like before you have your own sessions. Sample data is removed when you save your first real session.
 

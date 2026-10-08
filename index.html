@@ -17,6 +17,51 @@
   </header>
 
   <main>
+    <!-- Daily check-in -->
+    <section class="today" aria-labelledby="today-title">
+      <div class="today-head">
+        <h2 id="today-title">Today</h2>
+        <button id="today-edit" class="btn btn-quiet">Check in</button>
+      </div>
+      <p id="today-summary" class="today-summary"></p>
+
+      <form id="today-form" class="today-form" hidden>
+                <label class="field field-short">
+          <span>What time did you wake up?</span>
+          <input id="wake" name="wake" type="time">
+        </label>
+
+        <fieldset class="field">
+          <legend>What did you do first thing?</legend>
+          <div class="chips" id="first-chips">
+            <label><input type="radio" name="first" value="Checked my phone"><span>Checked my phone</span></label>
+            <label><input type="radio" name="first" value="Exercised"><span>Exercised</span></label>
+            <label><input type="radio" name="first" value="Ate breakfast"><span>Ate breakfast</span></label>
+            <label><input type="radio" name="first" value="Showered"><span>Showered</span></label>
+            <label><input type="radio" name="first" value="Went outside"><span>Went outside</span></label>
+            <label><input type="radio" name="first" value="Started studying or work"><span>Started studying or work</span></label>
+          </div>
+          <input id="first-other" name="firstOther" type="text" maxlength="40" placeholder="Something else? Type it here" aria-label="Something else you did first thing">
+        </fieldset>
+
+        <label class="field">
+          <span>What have you eaten today?</span>
+          <textarea id="food" name="food" rows="2" maxlength="300" placeholder="e.g. oatmeal and coffee, chicken wrap"></textarea>
+          <small>Come back and add to this through the day.</small>
+        </label>
+
+        <label class="field">
+          <span>What else is on today?</span>
+          <textarea id="plans" name="plans" rows="3" maxlength="500" placeholder="One per line, e.g.&#10;Chem lecture 10–11:30&#10;Shift at work 5–9"></textarea>
+        </label>
+
+        <div class="today-actions">
+          <button type="submit" class="btn btn-primary">Save check-in</button>
+          <button type="button" id="today-cancel" class="btn btn-quiet">Cancel</button>
+        </div>
+      </form>
+    </section>
+
     <!-- Session -->
     <section class="session" aria-labelledby="session-title">
       <h2 id="session-title" class="visually-hidden">Focus session</h2>
@@ -26,6 +71,12 @@
         <label><input type="radio" name="activity" value="study" checked><span>Studying</span></label>
         <label><input type="radio" name="activity" value="work"><span>Working</span></label>
       </fieldset>
+
+      <div class="place">
+        <label for="location">Where are you?</label>
+        <input id="location" type="text" maxlength="40" placeholder="e.g. Home, library, café" autocomplete="off">
+        <div class="chips chips-small" id="place-chips"></div>
+      </div>
 
       <div class="clock">
         <div class="clock-band" id="clock-band" aria-hidden="true"></div>
@@ -90,9 +141,43 @@
           <figure class="panel">
             <figcaption>
               <h3>Studying vs working</h3>
-              <p>Average focus and total time for each.</p>
+              <p>Average focus for each.</p>
             </figcaption>
             <div id="kinds" class="bars"></div>
+          </figure>
+        </div>
+
+        <div class="split">
+          <figure class="panel">
+            <figcaption>
+              <h3>Where you are</h3>
+              <p>Average focus at each place.</p>
+            </figcaption>
+            <div id="places" class="bars"></div>
+          </figure>
+          <figure class="panel">
+            <figcaption>
+              <h3>Wake-up time</h3>
+              <p>Average focus on days you woke up at each time.</p>
+            </figcaption>
+            <div id="wakes" class="bars"></div>
+          </figure>
+        </div>
+
+        <div class="split">
+          <figure class="panel">
+            <figcaption>
+              <h3>First thing in the morning</h3>
+              <p>Average focus on days that started each way.</p>
+            </figcaption>
+            <div id="firsts" class="bars"></div>
+          </figure>
+          <figure class="panel">
+            <figcaption>
+              <h3>How busy your day was</h3>
+              <p>Average focus by how many other things you had on.</p>
+            </figcaption>
+            <div id="busy" class="bars"></div>
           </figure>
         </div>
       </div>
