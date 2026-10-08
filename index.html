@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Focus Tracker</title>
-  <meta name="description" content="Time your study sessions, rate your focus, and see which hours you focus best.">
+  <meta name="description" content="Time your study and work sessions, rate your focus, and see which hours you focus best.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
@@ -13,19 +13,19 @@
 <body>
   <header class="masthead">
     <h1>Focus Tracker</h1>
-    <p>Time your study sessions, rate how well you focused, and find your best hours.</p>
+    <p>Time your study and work sessions, rate how well you focused, and find your best hours.</p>
   </header>
 
   <main>
     <!-- Session -->
     <section class="session" aria-labelledby="session-title">
-      <h2 id="session-title" class="visually-hidden">Study session</h2>
+      <h2 id="session-title" class="visually-hidden">Focus session</h2>
 
-      <label class="subject">
-        <span>What are you studying?</span>
-        <input id="subject" type="text" list="subject-list" placeholder="e.g. Biology, essay, calculus" autocomplete="off" maxlength="40">
-        <datalist id="subject-list"></datalist>
-      </label>
+      <fieldset class="activity" id="activity">
+        <legend>What are you doing?</legend>
+        <label><input type="radio" name="activity" value="study" checked><span>Studying</span></label>
+        <label><input type="radio" name="activity" value="work"><span>Working</span></label>
+      </fieldset>
 
       <div class="clock">
         <div class="clock-band" id="clock-band" aria-hidden="true"></div>
@@ -55,6 +55,13 @@
           <button id="clear-sample" class="btn btn-quiet">Remove sample data</button>
         </div>
 
+        <fieldset class="activity activity-filter" id="filter" hidden>
+          <legend class="visually-hidden">Show insights for</legend>
+          <label><input type="radio" name="filter" value="all" checked><span>All sessions</span></label>
+          <label><input type="radio" name="filter" value="study"><span>Studying</span></label>
+          <label><input type="radio" name="filter" value="work"><span>Working</span></label>
+        </fieldset>
+
         <ul id="headlines" class="headlines"></ul>
 
         <div class="stats" id="stats"></div>
@@ -82,10 +89,10 @@
           </figure>
           <figure class="panel">
             <figcaption>
-              <h3>By subject</h3>
-              <p>Average focus and total time per subject.</p>
+              <h3>Studying vs working</h3>
+              <p>Average focus and total time for each.</p>
             </figcaption>
-            <div id="subjects" class="bars"></div>
+            <div id="kinds" class="bars"></div>
           </figure>
         </div>
       </div>
@@ -126,7 +133,7 @@
       </label>
       <div class="dialog-actions">
         <button value="discard" class="btn btn-quiet" formnovalidate>Discard session</button>
-        <button value="resume" class="btn btn-quiet" formnovalidate>Keep studying</button>
+        <button value="resume" class="btn btn-quiet" formnovalidate>Keep going</button>
         <button value="save" class="btn btn-primary">Save session</button>
       </div>
     </form>

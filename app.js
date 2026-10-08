@@ -1,5 +1,5 @@
 /* Focus Tracker
- * Times study sessions, records distractions and time away from the tab,
+ * Times study and work sessions, records distractions and time away from the tab,
  * asks for a 1–5 focus rating at the end, and finds patterns in the data.
  * Everything is stored in this browser's localStorage.
  */
@@ -8,6 +8,7 @@
 
   const STORE_KEY = "focus-tracker.sessions.v1";
   const ACTIVE_KEY = "focus-tracker.active.v1";
+  const KIND_KEY = "focus-tracker.kind.v1"; // remembers Studying/Working between visits
   const FULL_BAND_MINUTES = 50; // highlighter under the clock is full after this long
   const MIN_SESSIONS_FOR_INSIGHTS = 1;
   const MIN_SESSIONS_PER_GROUP = 2; // a time block needs this many sessions to be called "best"
@@ -30,6 +31,9 @@
     { label: "90+ min", max: Infinity },
   ];
   const RATING_WORDS = ["", "Barely", "Scattered", "Okay", "Solid", "Locked in"];
+  const KINDS = { study: { label: "Studying", noun: "studying" }, work: { label: "Working", noun: "working" } };
+  // Sessions saved before the Studying/Working choice existed count as studying
+  const kindOf = (s) => (s.kind === "work" ? "work" : "study");
 
   // ---------- Storage ----------
   function load(key, fallback) {
@@ -50,8 +54,9 @@
   }
 
   let sessions = load(STORE_KEY, []).filter(isValidSession);
-  let active = load(ACTIVE_KEY, null); // { start, subject, distractions: [ms], awayMs, hiddenAt }
+  let active = load(ACTIVE_KEY, null); // { start, kind, distractions: [ms], awayMs, hiddenAt }
   let logShown = LOG_PAGE;
+  let filter = "all"; // which sessions the insights cover: all, study or work
 
   function saveSessions() { store(STORE_KEY, sessions); }
   function saveActive() { store(ACTIVE_KEY, active); }
@@ -64,13 +69,13 @@
   // ---------- Elements ----------
   const $ = (id) => document.getElementById(id);
   const el = {
-    subject: $("subject"), subjectList: $("subject-list"),
+    activity: $("activity"), filter: $("filter"),
     timer: $("timer"), band: $("clock-band"), status: $("status"), hint: $("hint"),
     start: $("start"), distract: $("distract"), distractCount: $("distract-count"), finish: $("finish"),
     insightsEmpty: $("insights-empty"), insightsBody: $("insights-body"),
     sample: $("sample"), sampleBanner: $("sample-banner"), clearSample: $("clear-sample"),
     headlines: $("headlines"), stats: $("stats"), heatmap: $("heatmap"),
-    lengths: $("lengths"), subjects: $("subjects"),
+    lengths: $("lengths"), kinds: $("kinds"),
     log: $("log"), logEmpty: $("log-empty"),
     exportCsv: $("export-csv"), exportJson: $("export-json"), importInput: $("import"),
     dialog: $("rate"), rateForm: $("rate-form"), rateSummary: $("rate-summary"),
@@ -111,10 +116,20 @@
   // ---------- Running a session ----------
   let ticker = null;
 
+  function chosenKind() {
+    const checked = el.activity.querySelector("input:checked");
+    return checked && checked.value === "work" ? "work" : "study";
+  }
+  function setChosenKind(kind) {
+    const input = el.activity.querySelector(`input[value="${kind}"]`);
+    if (input) input.checked = true;
+  }
+  el.activity.addEventListener("change", () => store(KIND_KEY, chosenKind()));
+
   function startSession() {
     active = {
       start: Date.now(),
-      subject: el.subject.value.trim(),
+      kind: chosenKind(),
       distractions: [],
       awayMs: 0,
       hiddenAt: document.hidden ? Date.now() : null,
@@ -140,7 +155,7 @@
     const min = (active.end - active.start) / 60000;
     const d = active.distractions.length;
     const away = Math.round(active.awayMs / 60000);
-    let summary = `${duration(Math.max(1, min))}${active.subject ? ` of ${active.subject}` : ""}, ${plural(d, "distraction")}`;
+    let summary = `${duration(Math.max(1, min))} of ${KINDS[kindOf(active)].noun}, ${plural(d, "distraction")}`;
     if (away >= 1) summary += `, ${duration(away)} away from this tab`;
     el.rateSummary.textContent = summary + ".";
     el.rateForm.reset();
@@ -156,7 +171,7 @@
         id: `s${active.start}`,
         start: active.start,
         end: active.end,
-        subject: active.subject || "",
+        kind: kindOf(active),
         rating: Number(data.get("rating")),
         distractions: active.distractions,
         awayMs: Math.round(active.awayMs),
@@ -175,7 +190,7 @@
       saveActive();
       toast("Session discarded.");
     } else {
-      // "Keep studying" or Escape: resume the same session
+      // "Keep going" or Escape: resume the same session
       delete active.end;
       saveActive();
     }
@@ -214,7 +229,7 @@
     el.start.hidden = !!active;
     el.distract.hidden = !running;
     el.finish.hidden = !running;
-    el.subject.disabled = !!active;
+    el.activity.querySelectorAll("input").forEach((i) => { i.disabled = !!active; });
 
     if (!active) {
       stopTicker();
@@ -225,7 +240,7 @@
       return;
     }
 
-    el.subject.value = active.subject;
+    setChosenKind(kindOf(active));
     el.distractCount.textContent = active.distractions.length;
     const parts = [`Started at ${timeFmt.format(active.start)}`];
     const away = Math.floor((active.awayMs || 0) / 60000);
@@ -265,9 +280,9 @@
       .sort((a, b) => (b.rating - a.rating) || (a.perHour - b.perHour));
   }
 
-  function headlines() {
+  function headlines(list) {
     const out = [];
-    const byBlock = rank(groupBy(sessions, blockOf));
+    const byBlock = rank(groupBy(list, blockOf));
     if (byBlock.length >= 2) {
       const best = byBlock[0], worst = byBlock[byBlock.length - 1];
       out.push(`You focus best in the <strong>${BLOCKS[best.key].phrase}</strong>, averaging ${one(best.rating)} out of 5 over ${plural(best.n, "session")}.`);
@@ -275,21 +290,21 @@
         out.push(`Your focus is weakest in the <strong>${BLOCKS[worst.key].phrase}</strong> at ${one(worst.rating)} out of 5. Save easier tasks for then.`);
       }
     } else if (byBlock.length === 1) {
-      out.push(`So far you mostly study in the <strong>${BLOCKS[byBlock[0].key].phrase}</strong>. Try a few sessions at other times to compare.`);
+      out.push(`So far most of your sessions are in the <strong>${BLOCKS[byBlock[0].key].phrase}</strong>. Try a few sessions at other times to compare.`);
     }
 
-    const byDay = rank(groupBy(sessions, weekdayOf));
+    const byDay = rank(groupBy(list, weekdayOf));
     if (byDay.length >= 3) {
       out.push(`Your strongest day is <strong>${fullDay(byDay[0].key)}</strong>, averaging ${one(byDay[0].rating)} out of 5.`);
     }
 
-    const byLength = rank(groupBy(sessions, lengthOf));
+    const byLength = rank(groupBy(list, lengthOf));
     if (byLength.length >= 2) {
       out.push(`Sessions of <strong>${LENGTHS[byLength[0].key].label.toLowerCase()}</strong> go best for you.`);
     }
 
     if (!out.length) {
-      const left = Math.max(1, 5 - sessions.length);
+      const left = Math.max(1, 5 - list.length);
       out.push(`Log ${plural(left, "more session")} at different times of day to start seeing patterns.`);
     }
     return out;
@@ -299,6 +314,10 @@
   }
 
   // ---------- Rendering insights ----------
+  function viewSessions() {
+    return filter === "all" ? sessions : sessions.filter((s) => kindOf(s) === filter);
+  }
+
   function renderInsights() {
     const has = sessions.length >= MIN_SESSIONS_FOR_INSIGHTS;
     el.insightsEmpty.hidden = has;
@@ -306,26 +325,51 @@
     el.sampleBanner.hidden = !sessions.some((s) => s.sample);
     if (!has) return;
 
-    el.headlines.innerHTML = headlines().map((h) => `<li>${h}</li>`).join("");
+    // Only offer the filter once both kinds of session exist
+    const hasBoth = sessions.some((s) => kindOf(s) === "work") && sessions.some((s) => kindOf(s) === "study");
+    el.filter.hidden = !hasBoth;
+    if (!hasBoth && filter !== "all") {
+      filter = "all";
+      el.filter.querySelector('input[value="all"]').checked = true;
+    }
 
-    const all = summarize(sessions);
-    const focused = sessions.reduce((t, s) => t + focusedMinutesOf(s), 0);
+    const view = viewSessions();
+    if (!view.length) {
+      el.headlines.innerHTML = `<li>No ${KINDS[filter].noun} sessions yet.</li>`;
+      el.stats.innerHTML = "";
+      el.heatmap.innerHTML = "";
+      el.lengths.innerHTML = "";
+      renderBars(el.kinds, groupBy(sessions, kindOf), (k) => KINDS[k].label, false);
+      return;
+    }
+
+    el.headlines.innerHTML = headlines(view).map((h) => `<li>${h}</li>`).join("");
+
+    const all = summarize(view);
+    const focused = view.reduce((t, s) => t + focusedMinutesOf(s), 0);
     el.stats.innerHTML = [
-      `<span><b>${sessions.length}</b>${sessions.length === 1 ? "session" : "sessions"}</span>`,
-      `<span><b>${duration(all.minutes)}</b>studied</span>`,
+      `<span><b>${view.length}</b>${view.length === 1 ? "session" : "sessions"}</span>`,
+      `<span><b>${duration(all.minutes)}</b>logged</span>`,
       `<span><b>${duration(focused)}</b>on this tab</span>`,
       `<span><b>${one(all.rating)}</b>average focus</span>`,
       `<span><b>${one(all.perHour)}</b>distractions an hour</span>`,
     ].join("");
 
-    renderHeatmap();
-    renderBars(el.lengths, groupBy(sessions, lengthOf), (k) => LENGTHS[k].label, true);
-    renderBars(el.subjects, groupBy(sessions, (s) => s.subject || "No subject"), (k) => k, false);
+    renderHeatmap(view);
+    renderBars(el.lengths, groupBy(view, lengthOf), (k) => LENGTHS[k].label, true);
+    // The comparison always covers both kinds, whatever the filter
+    renderBars(el.kinds, groupBy(sessions, kindOf), (k) => KINDS[k].label, false);
   }
 
-  function renderHeatmap() {
+  el.filter.addEventListener("change", () => {
+    const checked = el.filter.querySelector("input:checked");
+    filter = checked ? checked.value : "all";
+    renderInsights();
+  });
+
+  function renderHeatmap(list) {
     const cells = new Map();
-    for (const s of sessions) {
+    for (const s of list) {
       const k = `${blockOf(s)}-${weekdayOf(s)}`;
       if (!cells.has(k)) cells.set(k, []);
       cells.get(k).push(s);
@@ -375,7 +419,7 @@
       const away = Math.round((s.awayMs || 0) / 60000);
       if (away >= 1) bits.push(`${duration(away)} away`);
       return `<li>
-        <span class="log-when">${dayFmt.format(s.start)}, ${timeFmt.format(s.start)}${s.subject ? ` · ${escapeHtml(s.subject)}` : ""}</span>
+        <span class="log-when">${dayFmt.format(s.start)}, ${timeFmt.format(s.start)} <span class="log-kind">${KINDS[kindOf(s)].label}</span></span>
         <span class="log-meta">${bits.join(", ")}${s.note ? ` — <span class="log-note">${escapeHtml(s.note)}</span>` : ""}</span>
         <span class="log-rating" style="--r:${s.rating}" title="${RATING_WORDS[s.rating]}" aria-label="Focus ${s.rating} of 5">${s.rating}</span>
         <button class="log-delete" data-id="${escapeHtml(s.id)}">Delete</button>
@@ -405,15 +449,9 @@
     if (e.target.id === "more") { logShown += LOG_PAGE; renderLog(); }
   });
 
-  function renderSubjects() {
-    const names = [...new Set(sessions.filter((s) => !s.sample).map((s) => s.subject).filter(Boolean))];
-    el.subjectList.innerHTML = names.map((n) => `<option value="${escapeHtml(n)}">`).join("");
-  }
-
   function renderAll() {
     renderInsights();
     renderLog();
-    renderSubjects();
     if (!active) renderActive();
   }
 
@@ -431,10 +469,10 @@
 
   el.exportCsv.addEventListener("click", () => {
     if (!sessions.length) return toast("No sessions to export yet.");
-    const head = ["start", "end", "weekday", "time_of_day", "minutes", "subject", "focus_rating", "distractions", "minutes_away", "note"];
+    const head = ["start", "end", "weekday", "time_of_day", "minutes", "activity", "focus_rating", "distractions", "minutes_away", "note"];
     const rows = sessions.map((s) => [
       new Date(s.start).toISOString(), new Date(s.end).toISOString(), fullDay(weekdayOf(s)),
-      BLOCKS[blockOf(s)].label, Math.round(minutesOf(s)), s.subject, s.rating,
+      BLOCKS[blockOf(s)].label, Math.round(minutesOf(s)), KINDS[kindOf(s)].noun, s.rating,
       distractionsOf(s), Math.round((s.awayMs || 0) / 60000), s.note || "",
     ].map(csvCell).join(","));
     download(`focus-sessions-${today()}.csv`, [head.join(","), ...rows].join("\n"), "text/csv");
@@ -470,11 +508,11 @@
     const now = new Date();
     let seed = 7;
     const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
-    const subjects = ["Biology", "Calculus", "History essay", "Spanish"];
-    // Times of day this pretend student studies, with how well they tend to focus then
+    // Times of day this pretend student studies or works, with how well they tend to focus then
     const habits = [
-      { hour: 8, base: 3.6 }, { hour: 10, base: 4.4 }, { hour: 13, base: 3.3 },
-      { hour: 16, base: 3.4 }, { hour: 19, base: 3.8 }, { hour: 22, base: 2.6 }, { hour: 0, base: 1.9 },
+      { hour: 8, base: 3.6, kind: "study" }, { hour: 10, base: 4.4, kind: "study" }, { hour: 13, base: 3.0, kind: "work" },
+      { hour: 16, base: 3.9, kind: "work" }, { hour: 19, base: 3.8, kind: "study" }, { hour: 22, base: 2.6, kind: "study" },
+      { hour: 0, base: 1.9, kind: "study" }, { hour: 18, base: 3.2, kind: "work" },
     ];
     for (let day = 27; day >= 1; day--) {
       const count = rand() < 0.3 ? 0 : rand() < 0.6 ? 1 : 2;
@@ -489,7 +527,7 @@
         const nDistract = Math.max(0, Math.round((5.5 - rating) * minutes / 40 + (rand() - 0.5) * 2));
         out.push({
           id: `sample-${start}`, start, end, sample: true,
-          subject: subjects[Math.floor(rand() * subjects.length)],
+          kind: h.kind,
           rating,
           distractions: Array.from({ length: nDistract }, () => start + rand() * (end - start)).sort(),
           awayMs: Math.round(rand() * (5.5 - rating) * 3 * 60000),
@@ -527,6 +565,8 @@
   el.start.addEventListener("click", startSession);
   el.distract.addEventListener("click", logDistraction);
   el.finish.addEventListener("click", finishSession);
+
+  setChosenKind(load(KIND_KEY, "study"));
 
   // Restore a session that was running when the page closed
   if (active) {

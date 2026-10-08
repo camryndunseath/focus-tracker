@@ -1,10 +1,10 @@
 # Focus Tracker
 
-A small web app that tracks how well you focus while you study, so you can find the times of day, days of the week and session lengths that work best for you.
+A small web app that tracks how well you focus while you study or work, so you can find the times of day, days of the week and session lengths that work best for you.
 
 ## How it works
 
-1. Type what you're studying and press **Start session**.
+1. Choose **Studying** or **Working** and press **Start session**.
 2. Each time your mind wanders or you pick up your phone, press **I got distracted**. Time you spend away from the browser tab is counted automatically.
 3. Press **Finish session** and rate your focus from 1 (barely) to 5 (locked in). You can add a short note, like "tired" or "noisy library".
 
@@ -13,7 +13,9 @@ After a few sessions, the **When you focus best** section shows:
 - the time of day and day of the week you focus best and worst
 - a day × time-of-day heatmap of your average focus
 - how your focus changes with session length
-- your average focus and total time per subject
+- how your focus compares between studying and working
+
+Once you have both kinds of session, you can filter the insights to just studying or just working. Your best hours for one may not be your best hours for the other.
 
 Use **Preview with sample data** to see what the insights look like before you have your own sessions. Sample data is removed when you save your first real session.
 
