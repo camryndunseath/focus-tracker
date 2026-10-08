@@ -28,16 +28,22 @@ Use **Preview with sample data** to see what the insights look like before you h
 
 ## Your data
 
-Sessions are saved in your browser's local storage. Nothing is sent anywhere. Because of that:
+Everything you log is saved in your browser straight away, so the app works offline.
 
-- data doesn't sync between devices or browsers
-- clearing your browser's site data deletes it
+If Supabase is set up (see below), you can sign in with your email. Your sessions and check-ins are then also saved to your account and show up on any device you sign in on. Changes you make while offline are saved to your account when you're back online. The first time you sign in on a browser that already has data, the app asks whether to add it to your account.
 
-Use **Back up data** to download a backup file, and **Restore backup** to load it on another device. **Export CSV** gives you a spreadsheet of every session.
+Without Supabase, data stays in that one browser, and clearing your browser's site data deletes it. Use **Back up data** to download a backup file and **Restore backup** to load it elsewhere. **Export CSV** gives you a spreadsheet of every session.
+
+## Setting up Supabase
+
+1. Create a free project at [supabase.com](https://supabase.com).
+2. In the project, open **SQL Editor**, paste the contents of [`supabase/schema.sql`](supabase/schema.sql) and run it. This creates the `sessions` and `days` tables and makes sure each person can only see their own rows.
+3. Under **Authentication → URL Configuration**, set **Site URL** to where the app lives (for example `https://camryndunseath.github.io/focus-tracker/`) and add the same address under **Redirect URLs**. Sign-in links send you back there.
+4. Under **Project Settings → API**, copy the **Project URL** and the **anon public** key (or **publishable** key) into [`config.js`](config.js), then commit it. This key is meant to be public; the table rules keep your data private.
 
 ## Running it
 
-There's nothing to install. Open `index.html` in a browser, or publish it with GitHub Pages:
+There's nothing to install. Open `index.html` in a browser, or publish it with GitHub Pages. Signing in needs the GitHub Pages address (or another web address), because sign-in links can't open a file on your computer.
 
 1. In the repository, go to **Settings → Pages**.
 2. Under **Build and deployment**, set **Source** to *Deploy from a branch*, choose `main` and `/ (root)`, and save.
@@ -47,4 +53,6 @@ There's nothing to install. Open `index.html` in a browser, or publish it with G
 
 - `index.html` — page structure
 - `style.css` — styles, including dark mode
-- `app.js` — timer, distraction tracking, storage and analysis
+- `app.js` — timer, distraction tracking, storage, Supabase sync and analysis
+- `config.js` — your Supabase project URL and public key
+- `supabase/schema.sql` — database tables and access rules

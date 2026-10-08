@@ -3,7 +3,10 @@
  * away from the tab, asks for a 1–5 focus rating at the end, and keeps a short
  * daily check-in (wake-up time, first thing you did, food, other plans).
  * It then looks for patterns between all of that and your focus.
- * Everything is stored in this browser's localStorage.
+ *
+ * Data is always kept in this browser's localStorage. When Supabase is set up
+ * in config.js and you sign in, every change is also saved to your account,
+ * so the same data shows up on any device you sign in on.
  */
 (() => {
   "use strict";
@@ -14,6 +17,8 @@
   const PLACE_KEY = "focus-tracker.place.v1"; // remembers the last place
   const DAYS_KEY = "focus-tracker.days.v1"; // daily check-ins, keyed by YYYY-MM-DD
   const DAY_STARTS_AT = 4; // sessions before 4am count toward the previous day
+  const OUTBOX_KEY = "focus-tracker.outbox.v1"; // changes waiting to be saved to Supabase
+  const OWNER_KEY = "focus-tracker.owner.v1"; // which account the data in this browser belongs to
   const FULL_BAND_MINUTES = 50; // highlighter under the clock is full after this long
   const MIN_SESSIONS_FOR_INSIGHTS = 1;
   const MIN_SESSIONS_PER_GROUP = 2; // a time block needs this many sessions to be called "best"
@@ -95,6 +100,10 @@
     location: $("location"), placeChips: $("place-chips"),
     todayForm: $("today-form"), todaySummary: $("today-summary"), todayEdit: $("today-edit"), todayCancel: $("today-cancel"),
     wake: $("wake"), firstChips: $("first-chips"), firstOther: $("first-other"), food: $("food"), plans: $("plans"),
+    account: $("account"), accountStatus: $("account-status"), signinOpen: $("signin-open"), signout: $("signout"),
+    signinForm: $("signin-form"), email: $("email"), signinCancel: $("signin-cancel"),
+    merge: $("merge"), mergeText: $("merge-text"), mergeYes: $("merge-yes"), mergeNo: $("merge-no"),
+    storageNote: $("storage-note"),
     places: $("places"), wakes: $("wakes"), firsts: $("firsts"), busy: $("busy"),
     timer: $("timer"), band: $("clock-band"), status: $("status"), hint: $("hint"),
     start: $("start"), distract: $("distract"), distractCount: $("distract-count"), finish: $("finish"),
@@ -257,6 +266,7 @@
       sessions.push(session);
       sessions.sort((a, b) => a.start - b.start);
       saveSessions();
+      queueSession(session);
       active = null;
       saveActive();
       toast("Session saved.");
@@ -645,6 +655,7 @@
     }
     days[todayKey()] = entry;
     saveDays();
+    queueDay(todayKey());
     editingToday = false;
     renderAll();
     toast("Check-in saved.");
@@ -662,8 +673,10 @@
         del.textContent = "Confirm delete";
         return;
       }
+      const gone = sessions.find((s) => s.id === del.dataset.id);
       sessions = sessions.filter((s) => s.id !== del.dataset.id);
       saveSessions();
+      if (gone && !gone.sample) queueDelete(gone.id);
       renderAll();
       toast("Session deleted.");
       return;
@@ -734,6 +747,8 @@
       }
       saveSessions();
       saveDays();
+      added.forEach((s) => queueSession(s));
+      Object.keys(incomingDays).forEach((k) => { if (days[k] === incomingDays[k]) queueDay(k); });
       renderAll();
       toast(`Restored ${plural(added.length, "session")} and ${plural(addedDays, "check-in")}.`);
     } catch {
@@ -827,6 +842,315 @@
   });
   el.clearSample.addEventListener("click", () => { removeSampleData(); toast("Sample data removed."); });
 
+  // ---------- Supabase sync ----------
+  // The app works offline-first: every change is saved to localStorage right away,
+  // then added to an "outbox" that is sent to Supabase when you're signed in and online.
+  const CONFIG = window.FOCUS_TRACKER_CONFIG || {};
+  const sb = CONFIG.supabaseUrl && CONFIG.supabaseAnonKey && window.supabase
+    ? window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseAnonKey)
+    : null;
+  let user = null;
+  let outbox = load(OUTBOX_KEY, []);
+  if (!Array.isArray(outbox)) outbox = [];
+  let syncState = "saved"; // saved | saving | offline | error
+  let syncError = "";
+  let linkSentTo = "";
+  let signoutConfirm = false;
+
+  const toSessionRow = (s) => ({
+    user_id: user.id,
+    id: s.id,
+    started_at: new Date(s.start).toISOString(),
+    ended_at: new Date(s.end).toISOString(),
+    kind: kindOf(s),
+    place: tidy(s.place),
+    rating: s.rating,
+    distractions: Array.isArray(s.distractions) ? s.distractions : [],
+    away_ms: Math.max(0, Math.round(s.awayMs || 0)),
+    note: s.note || "",
+  });
+  const fromSessionRow = (r) => ({
+    id: r.id,
+    start: Date.parse(r.started_at),
+    end: Date.parse(r.ended_at),
+    kind: r.kind,
+    place: r.place || "",
+    rating: r.rating,
+    distractions: Array.isArray(r.distractions) ? r.distractions : [],
+    awayMs: r.away_ms || 0,
+    note: r.note || "",
+  });
+  const toDayRow = (key, d) => ({
+    user_id: user.id,
+    day: key,
+    wake: d.wake || null,
+    first_thing: d.first || "",
+    food: d.food || "",
+    plans: Array.isArray(d.plans) ? d.plans : [],
+    updated_at: new Date().toISOString(),
+  });
+  const fromDayRow = (r) => ({
+    wake: r.wake ? String(r.wake).slice(0, 5) : "",
+    first: r.first_thing || "",
+    food: r.food || "",
+    plans: Array.isArray(r.plans) ? r.plans : [],
+  });
+
+  // Each outbox entry names one thing to save or delete. A newer change to the
+  // same thing replaces the older one, so the outbox never grows without limit.
+  function enqueue(entry) {
+    if (!sb || !user) return;
+    outbox = outbox.filter((e) => e.key !== entry.key);
+    outbox.push(entry);
+    store(OUTBOX_KEY, outbox);
+    flush();
+  }
+  function queueSession(s) { enqueue({ key: `session:${s.id}`, type: "session", id: s.id }); }
+  function queueDelete(id) { enqueue({ key: `session:${id}`, type: "delete", id }); }
+  function queueDay(key) { enqueue({ key: `day:${key}`, type: "day", day: key }); }
+
+  // Network problems are retried later; anything else (like a rejected row) is dropped
+  const isNetworkError = (error) => !error.code || /fetch|network|timeout/i.test(error.message || "");
+
+  async function send(entry) {
+    if (entry.type === "session") {
+      const s = sessions.find((x) => x.id === entry.id);
+      if (!s) return null; // deleted since it was queued
+      return (await sb.from("sessions").upsert(toSessionRow(s), { onConflict: "user_id,id" })).error;
+    }
+    if (entry.type === "delete") {
+      return (await sb.from("sessions").delete().eq("user_id", user.id).eq("id", entry.id)).error;
+    }
+    if (entry.type === "day") {
+      const d = days[entry.day];
+      if (!d) return null;
+      return (await sb.from("days").upsert(toDayRow(entry.day, d), { onConflict: "user_id,day" })).error;
+    }
+    return null;
+  }
+
+  // Sends the outbox. Returns true when everything is saved. Overlapping calls wait for
+  // the one in progress and then send anything added meanwhile.
+  let flushPromise = null;
+  function flush() {
+    if (!sb || !user) return Promise.resolve(outbox.length === 0);
+    if (flushPromise) return flushPromise.then(() => flush());
+    flushPromise = sendOutbox().finally(() => { flushPromise = null; });
+    return flushPromise;
+  }
+
+  async function sendOutbox() {
+    if (!outbox.length) { setSync("saved"); return true; }
+    if (!navigator.onLine) { setSync("offline"); return false; }
+    setSync("saving");
+    while (outbox.length) {
+      const entry = outbox[0];
+      let error;
+      try { error = await send(entry); } catch (e) { error = { message: String((e && e.message) || e) }; }
+      if (error && isNetworkError(error)) { setSync("offline"); return false; }
+      if (error) {
+        console.warn("Focus Tracker sync error", error);
+        toast("A change couldn't be saved to your account.");
+      }
+      outbox = outbox.filter((e) => e !== entry);
+      store(OUTBOX_KEY, outbox);
+    }
+    setSync("saved");
+    return true;
+  }
+
+  async function fetchAll(table, order) {
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await sb.from(table).select("*").order(order).range(from, from + 999);
+      if (error) throw error;
+      rows.push(...data);
+      if (data.length < 1000) return rows;
+    }
+  }
+
+  // Replaces what's in this browser with what's in your account (after sending local changes first)
+  async function pull() {
+    if (!sb || !user) return;
+    if (!(await flush())) return; // don't overwrite changes that haven't been sent yet
+    try {
+      const [sessionRows, dayRows] = await Promise.all([fetchAll("sessions", "started_at"), fetchAll("days", "day")]);
+      if (outbox.length) return; // something changed while loading; the next pull will catch it
+      const samples = sessions.filter((s) => s.sample);
+      sessions = [...sessionRows.map(fromSessionRow).filter(isValidSession), ...samples].sort((a, b) => a.start - b.start);
+      const sampleDays = Object.fromEntries(Object.entries(days).filter(([, d]) => d.sample));
+      days = { ...sampleDays, ...Object.fromEntries(dayRows.map((r) => [r.day, fromDayRow(r)])) };
+      saveSessions();
+      saveDays();
+      renderAll();
+      setSync("saved");
+    } catch (e) {
+      syncError = e && e.message ? e.message : "Couldn't load your data.";
+      setSync(isNetworkError(e) ? "offline" : "error");
+    }
+  }
+
+  function setSync(state) {
+    syncState = state;
+    renderAccount();
+  }
+
+  const realSessions = () => sessions.filter((s) => !s.sample);
+  const realDayKeys = () => Object.keys(days).filter((k) => !days[k].sample);
+
+  function clearLocalData() {
+    sessions = sessions.filter((s) => s.sample);
+    for (const k of realDayKeys()) delete days[k];
+    outbox = [];
+    saveSessions();
+    saveDays();
+    store(OUTBOX_KEY, outbox);
+  }
+
+  async function onSignedIn(sessionUser) {
+    const firstTime = !user || user.id !== sessionUser.id;
+    user = sessionUser;
+    const owner = load(OWNER_KEY, null);
+    if (owner && owner !== user.id) {
+      // Data left behind by a different account: never mix it into this one
+      clearLocalData();
+    }
+    if (!owner) {
+      const n = realSessions().length, d = realDayKeys().length;
+      if (n || d) {
+        // Data saved before signing in: ask before adding it to the account
+        el.mergeText.textContent = `This browser has ${plural(n, "session")} and ${plural(d, "check-in")} saved before you signed in. Add them to your account?`;
+        el.merge.hidden = false;
+        renderAccount();
+        return;
+      }
+    }
+    store(OWNER_KEY, user.id);
+    renderAccount();
+    if (firstTime) await pull();
+  }
+
+  function onSignedOut() {
+    user = null;
+    el.merge.hidden = true;
+    renderAccount();
+  }
+
+  function renderAccount() {
+    if (!sb) {
+      el.account.hidden = true;
+      return;
+    }
+    el.account.hidden = false;
+    el.signout.hidden = !user;
+    el.signinOpen.hidden = !!user || !el.signinForm.hidden;
+    el.accountStatus.classList.remove("is-warning");
+
+    if (!user) {
+      el.signout.textContent = "Sign out";
+      el.accountStatus.innerHTML = linkSentTo
+        ? `We sent a sign-in link to <b>${escapeHtml(linkSentTo)}</b>. Open it on this device to finish signing in.`
+        : "Your data is saved in this browser only. Sign in to keep it in your account and use it on any device.";
+      el.storageNote.textContent = "Your sessions are saved in this browser only. Sign in to save them to your account, or back up your data to move it to another device.";
+      return;
+    }
+
+    const who = `Signed in as <b>${escapeHtml(user.email || "you")}</b>.`;
+    const pending = outbox.length;
+    let status;
+    if (!el.merge.hidden) status = `${who} Choose what to do with the data already in this browser.`;
+    else if (syncState === "saving") status = `${who} Saving…`;
+    else if (syncState === "offline") status = `${who} You're offline. ${plural(pending, "change")} will save when you're back online.`;
+    else if (syncState === "error") {
+      status = `${who} <b>Couldn't load your data.</b> ${escapeHtml(syncError)}`;
+      el.accountStatus.classList.add("is-warning");
+    } else status = `${who} Everything is saved to your account.`;
+    el.accountStatus.innerHTML = status;
+    el.signout.textContent = signoutConfirm && pending ? `Sign out and lose ${plural(pending, "unsaved change")}` : "Sign out";
+    el.storageNote.textContent = "Your sessions are saved to your account, so they show up on any device you sign in on.";
+  }
+
+  if (sb) {
+    el.signinOpen.addEventListener("click", () => {
+      el.signinForm.hidden = false;
+      renderAccount();
+      el.email.focus();
+    });
+    el.signinCancel.addEventListener("click", () => { el.signinForm.hidden = true; renderAccount(); });
+    el.signinForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = el.email.value.trim();
+      const button = el.signinForm.querySelector("button[type=submit]");
+      button.disabled = true;
+      const { error } = await sb.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: location.origin + location.pathname },
+      });
+      button.disabled = false;
+      if (error) {
+        toast(/rate/i.test(error.message) ? "Too many sign-in emails. Wait a minute and try again." : `Couldn't send the link: ${error.message}`);
+        return;
+      }
+      linkSentTo = email;
+      el.signinForm.hidden = true;
+      renderAccount();
+    });
+
+    el.signout.addEventListener("click", async () => {
+      await flush();
+      if (outbox.length && !signoutConfirm) {
+        signoutConfirm = true; // second click confirms losing unsaved changes
+        renderAccount();
+        return;
+      }
+      signoutConfirm = false;
+      await sb.auth.signOut();
+      clearLocalData();
+      store(OWNER_KEY, null);
+      linkSentTo = "";
+      onSignedOut();
+      renderAll();
+      toast("Signed out. Your data is safe in your account.");
+    });
+
+    el.mergeYes.addEventListener("click", async () => {
+      el.merge.hidden = true;
+      store(OWNER_KEY, user.id);
+      realSessions().forEach((s) => enqueue({ key: `session:${s.id}`, type: "session", id: s.id }));
+      realDayKeys().forEach((k) => enqueue({ key: `day:${k}`, type: "day", day: k }));
+      renderAccount();
+      await pull();
+      toast("Added to your account.");
+    });
+    el.mergeNo.addEventListener("click", async () => {
+      el.merge.hidden = true;
+      clearLocalData();
+      store(OWNER_KEY, user.id);
+      renderAll();
+      await pull();
+    });
+
+    sb.auth.onAuthStateChange((event, session) => {
+      // Run outside the auth callback, as the Supabase docs recommend
+      setTimeout(() => {
+        if (session && session.user) {
+          linkSentTo = "";
+          onSignedIn(session.user);
+        } else if (event === "SIGNED_OUT") {
+          onSignedOut();
+        } else {
+          renderAccount();
+        }
+      }, 0);
+    });
+
+    window.addEventListener("online", () => { if (user) pull(); });
+    document.addEventListener("visibilitychange", () => {
+      // Pick up anything you saved on another device while this tab was in the background
+      if (!document.hidden && user && el.merge.hidden) pull();
+    });
+  }
+
   // ---------- Toast ----------
   let toastTimer = null;
   function toast(msg) {
@@ -850,4 +1174,5 @@
     else renderActive();
   }
   renderAll();
+  renderAccount();
 })();
