@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Focus Tracker</title>
+  <meta name="description" content="Time your study sessions, rate your focus, and see which hours you focus best.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="masthead">
+    <h1>Focus Tracker</h1>
+    <p>Time your study sessions, rate how well you focused, and find your best hours.</p>
+  </header>
+
+  <main>
+    <!-- Session -->
+    <section class="session" aria-labelledby="session-title">
+      <h2 id="session-title" class="visually-hidden">Study session</h2>
+
+      <label class="subject">
+        <span>What are you studying?</span>
+        <input id="subject" type="text" list="subject-list" placeholder="e.g. Biology, essay, calculus" autocomplete="off" maxlength="40">
+        <datalist id="subject-list"></datalist>
+      </label>
+
+      <div class="clock">
+        <div class="clock-band" id="clock-band" aria-hidden="true"></div>
+        <output id="timer" class="timer" aria-live="off">0:00:00</output>
+      </div>
+      <p id="status" class="status">Ready when you are.</p>
+
+      <div class="controls">
+        <button id="start" class="btn btn-primary">Start session</button>
+        <button id="distract" class="btn btn-flag" hidden>I got distracted <span id="distract-count" class="count">0</span></button>
+        <button id="finish" class="btn btn-primary" hidden>Finish session</button>
+      </div>
+      <p class="hint" id="hint">Tap “I got distracted” each time your mind wanders or you pick up your phone. Time spent away from this tab is counted automatically.</p>
+    </section>
+
+    <!-- Insights -->
+    <section class="insights" aria-labelledby="insights-title">
+      <h2 id="insights-title">When you focus best</h2>
+      <div id="insights-empty" class="empty">
+        <p>Finish a few sessions and your patterns show up here. After about five sessions, you'll see which times of day and session lengths work best for you.</p>
+        <button id="sample" class="btn btn-quiet">Preview with sample data</button>
+      </div>
+
+      <div id="insights-body" hidden>
+        <div id="sample-banner" class="sample-banner" hidden>
+          <p>You're looking at sample data.</p>
+          <button id="clear-sample" class="btn btn-quiet">Remove sample data</button>
+        </div>
+
+        <ul id="headlines" class="headlines"></ul>
+
+        <div class="stats" id="stats"></div>
+
+        <figure class="panel">
+          <figcaption>
+            <h3>Average focus by day and time</h3>
+            <p>The stronger the yellow, the better your focus. Numbers show how many sessions you logged.</p>
+          </figcaption>
+          <div class="heatmap-wrap"><div id="heatmap" class="heatmap" role="table" aria-label="Average focus rating by weekday and time of day"></div></div>
+          <div class="legend" aria-hidden="true">
+            <span>Scattered</span>
+            <span class="legend-scale"><i style="--r:1"></i><i style="--r:2"></i><i style="--r:3"></i><i style="--r:4"></i><i style="--r:5"></i></span>
+            <span>Locked in</span>
+          </div>
+        </figure>
+
+        <div class="split">
+          <figure class="panel">
+            <figcaption>
+              <h3>Session length</h3>
+              <p>Average focus for sessions of each length.</p>
+            </figcaption>
+            <div id="lengths" class="bars"></div>
+          </figure>
+          <figure class="panel">
+            <figcaption>
+              <h3>By subject</h3>
+              <p>Average focus and total time per subject.</p>
+            </figcaption>
+            <div id="subjects" class="bars"></div>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- Log -->
+    <section class="log" aria-labelledby="log-title">
+      <div class="log-head">
+        <h2 id="log-title">Session log</h2>
+        <div class="log-actions">
+          <button id="export-csv" class="btn btn-quiet">Export CSV</button>
+          <button id="export-json" class="btn btn-quiet">Back up data</button>
+          <label class="btn btn-quiet file-btn">Restore backup<input id="import" type="file" accept="application/json,.json"></label>
+        </div>
+      </div>
+      <p class="fine">Your sessions are saved in this browser only. Back up your data to move it to another device.</p>
+      <ol id="log" class="log-list"></ol>
+      <p id="log-empty" class="empty-line">No sessions yet. Start one above.</p>
+    </section>
+  </main>
+
+  <!-- Rating dialog -->
+  <dialog id="rate" aria-labelledby="rate-title">
+    <form method="dialog" id="rate-form">
+      <h2 id="rate-title">How well did you focus?</h2>
+      <p id="rate-summary" class="rate-summary"></p>
+      <fieldset class="rating">
+        <legend class="visually-hidden">Focus rating</legend>
+        <label><input type="radio" name="rating" value="1" required><span><b>1</b>Barely</span></label>
+        <label><input type="radio" name="rating" value="2"><span><b>2</b>Scattered</span></label>
+        <label><input type="radio" name="rating" value="3"><span><b>3</b>Okay</span></label>
+        <label><input type="radio" name="rating" value="4"><span><b>4</b>Solid</span></label>
+        <label><input type="radio" name="rating" value="5"><span><b>5</b>Locked in</span></label>
+      </fieldset>
+      <label class="note">
+        <span>Anything worth remembering? <em>(optional)</em></span>
+        <input name="note" type="text" maxlength="140" placeholder="e.g. tired, noisy library, had coffee">
+      </label>
+      <div class="dialog-actions">
+        <button value="discard" class="btn btn-quiet" formnovalidate>Discard session</button>
+        <button value="resume" class="btn btn-quiet" formnovalidate>Keep studying</button>
+        <button value="save" class="btn btn-primary">Save session</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
